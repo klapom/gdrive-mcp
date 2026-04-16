@@ -1,7 +1,8 @@
-import { createServer } from "http";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
+import { z, ZodRawShape } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { loadConfig } from "./config.js";
 import { createAuthenticatedClient } from "./auth.js";
 import { registerDriveListTools } from "./tools/drive-list.js";
@@ -9,115 +10,168 @@ import { registerDriveSearchTools } from "./tools/drive-search.js";
 import { registerDriveReadTools } from "./tools/drive-read.js";
 import { registerDriveManageTools } from "./tools/drive-manage.js";
 
-const VERSION = "0.1.0";
-const PORT = parseInt(process.env.HTTP_PORT ?? "8202", 10);
-const HOST = process.env.HTTP_HOST ?? "0.0.0.0";
+const VERSION = "0.2.0";
+const REST_PORT = parseInt(process.env.LISTEN_PORT ?? process.env.HTTP_PORT ?? "32370", 10);
+const MCP_PORT = parseInt(process.env.MCP_PORT ?? "33370", 10);
+const HOST = process.env.LISTEN_HOST ?? process.env.HTTP_HOST ?? "0.0.0.0";
 
-function readBody(req: import("http").IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(Buffer.from(c)));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
+type ToolHandler = (args: Record<string, unknown>) => Promise<{
+  content: { type: string; text: string }[];
+  isError?: boolean;
+}>;
+
+interface RegisteredTool {
+  name: string;
+  description: string;
+  shape: ZodRawShape;
+  schema: z.ZodObject<ZodRawShape>;
+  handler: ToolHandler;
 }
 
-function json(
-  res: import("http").ServerResponse,
-  status: number,
-  body: unknown,
-): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": Buffer.byteLength(payload),
+const tools = new Map<string, RegisteredTool>();
+
+const registryServer = {
+  tool(name: string, description: string, shape: ZodRawShape, handler: ToolHandler) {
+    tools.set(name, { name, description, shape, schema: z.object(shape), handler });
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as any;
+
+function sendJson(res: ServerResponse, status: number, data: unknown) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(data));
+}
+
+function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf-8");
+      if (!raw) return resolve({});
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          resolve(parsed as Record<string, unknown>);
+        } else {
+          reject(new Error("JSON body must be an object"));
+        }
+      } catch {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
   });
-  res.end(payload);
 }
 
 async function main() {
   const config = loadConfig();
   const auth = await createAuthenticatedClient(config);
 
-  const server = new McpServer({ name: "gdrive-mcp", version: VERSION });
-  registerDriveListTools(server, auth);
-  registerDriveSearchTools(server, auth);
-  registerDriveReadTools(server, auth);
-  registerDriveManageTools(server, auth);
+  registerDriveListTools(registryServer, auth);
+  registerDriveSearchTools(registryServer, auth);
+  registerDriveReadTools(registryServer, auth);
+  registerDriveManageTools(registryServer, auth);
 
-  const [clientTransport, serverTransport] =
-    InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "gdrive-http-wrapper", version: VERSION });
-  await Promise.all([
-    server.connect(serverTransport),
-    client.connect(clientTransport),
-  ]);
-
-  const tools = await client.listTools();
-  const toolNames = new Set(tools.tools.map((t) => t.name));
   process.stderr.write(
-    `[gdrive-http] tools: ${[...toolNames].join(", ")}\n`,
+    `[gdrive-http] tools: ${[...tools.keys()].join(", ")}\n`,
   );
 
-  const http = createServer(async (req, res) => {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "x"}`);
+  // ---- REST surface ----
+  const restServer = createServer(async (req, res) => {
+    const rawUrl = req.url ?? "/";
+    const url = rawUrl.split("?")[0];
     const method = req.method ?? "GET";
 
+    if (method === "GET" && (url === "/" || url === "/health")) {
+      return sendJson(res, 200, {
+        ok: true,
+        service: "gdrive-mcp-http",
+        version: VERSION,
+        tools: [...tools.keys()],
+        mcpEndpoint: `http://${HOST}:${MCP_PORT}/mcp`,
+      });
+    }
+    if (method === "GET" && url === "/tools") {
+      return sendJson(res, 200, {
+        tools: Array.from(tools.values()).map((t) => ({ name: t.name, description: t.description })),
+      });
+    }
+    if (method === "POST" && url.startsWith("/tools/")) {
+      const name = decodeURIComponent(url.slice("/tools/".length));
+      const tool = tools.get(name);
+      if (!tool) return sendJson(res, 404, { ok: false, error: `unknown tool: ${name}` });
+      let body: Record<string, unknown>;
+      try { body = await readBody(req); }
+      catch (e) { return sendJson(res, 400, { ok: false, error: e instanceof Error ? e.message : String(e) }); }
+      const parsed = tool.schema.safeParse(body);
+      if (!parsed.success) {
+        return sendJson(res, 400, { ok: false, error: "validation failed", issues: parsed.error.errors });
+      }
+      try {
+        const result = await tool.handler(parsed.data);
+        const text = result.content?.map((c) => c.text).join("\n") ?? "";
+        let data: unknown = text;
+        try { data = JSON.parse(text); } catch { /* leave as text */ }
+        return sendJson(res, result.isError ? 500 : 200, { ok: !result.isError, result: data, text });
+      } catch (e) {
+        return sendJson(res, 500, { ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    sendJson(res, 404, { error: "not found" });
+  });
+
+  // ---- MCP Streamable-HTTP surface ----
+  function buildMcpServer(): McpServer {
+    const s = new McpServer({ name: "gdrive-mcp", version: VERSION });
+    for (const t of tools.values()) {
+      s.tool(t.name, t.description, t.shape, ((args: unknown) => t.handler(args as Record<string, unknown>)) as never);
+    }
+    return s;
+  }
+
+  const mcpSessions = new Map<string, StreamableHTTPServerTransport>();
+
+  const mcpHttpServer = createServer(async (req, res) => {
+    const url = req.url ?? "/";
+    const path = url.split("?")[0];
+    if (path !== "/mcp" && path !== "/") {
+      return sendJson(res, 404, { ok: false, error: "Use /mcp for MCP Streamable-HTTP" });
+    }
     try {
-      if (method === "GET" && url.pathname === "/health") {
-        return json(res, 200, {
-          ok: true,
-          service: "gdrive-mcp-http",
-          version: VERSION,
-          tools: [...toolNames],
+      const sid = (req.headers["mcp-session-id"] ?? req.headers["x-mcp-session-id"]) as string | undefined;
+      let transport = sid ? mcpSessions.get(sid) : undefined;
+      if (!transport) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSid) => { mcpSessions.set(newSid, transport!); },
         });
+        transport.onclose = () => {
+          if (transport!.sessionId) mcpSessions.delete(transport!.sessionId);
+        };
+        const srv = buildMcpServer();
+        await srv.connect(transport);
       }
-
-      if (method === "GET" && url.pathname === "/tools") {
-        return json(res, 200, { tools: tools.tools });
-      }
-
-      if (method === "POST" && url.pathname.startsWith("/tools/")) {
-        const name = decodeURIComponent(url.pathname.slice("/tools/".length));
-        if (!toolNames.has(name)) {
-          return json(res, 404, { error: `unknown tool: ${name}` });
-        }
-        const raw = await readBody(req);
-        let args: Record<string, unknown> = {};
-        if (raw.trim().length > 0) {
-          try {
-            args = JSON.parse(raw);
-          } catch (e) {
-            return json(res, 400, {
-              error: "invalid JSON body",
-              detail: e instanceof Error ? e.message : String(e),
-            });
-          }
-        }
-        const result = await client.callTool({ name, arguments: args });
-        return json(res, 200, result);
-      }
-
-      return json(res, 404, { error: "not found" });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      process.stderr.write(`[gdrive-http] error: ${msg}\n`);
-      return json(res, 500, { error: msg });
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`[gdrive-http] MCP error: ${msg}\n`);
+      if (!res.headersSent) sendJson(res, 500, { ok: false, error: msg });
     }
   });
 
-  http.listen(PORT, HOST, () => {
-    process.stderr.write(
-      `[gdrive-http] v${VERSION} listening on http://${HOST}:${PORT}\n`,
-    );
+  restServer.listen(REST_PORT, HOST, () => {
+    process.stderr.write(`[gdrive-http] REST v${VERSION} on ${HOST}:${REST_PORT} (${tools.size} tools)\n`);
+  });
+  mcpHttpServer.listen(MCP_PORT, HOST, () => {
+    process.stderr.write(`[gdrive-http] MCP  v${VERSION} on ${HOST}:${MCP_PORT}/mcp\n`);
   });
 
-  const shutdown = async (signal: string) => {
-    process.stderr.write(`[gdrive-http] shutdown (${signal})\n`);
-    http.close();
-    await server.close();
-    await client.close();
-    process.exit(0);
+  const shutdown = (sig: string) => {
+    process.stderr.write(`[gdrive-http] shutdown (${sig})\n`);
+    restServer.close();
+    mcpHttpServer.close();
+    setTimeout(() => process.exit(0), 2000).unref();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
