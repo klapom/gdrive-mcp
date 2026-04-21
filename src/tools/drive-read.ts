@@ -1,7 +1,6 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
+import type { ToolDef } from "@klapom/mcp-toolkit-ts";
 import { z } from "zod";
+import type { ToolsContext } from "./context.js";
 
 // Google Workspace MIME types → export format
 const EXPORT_FORMATS: Record<string, { mimeType: string; ext: string }> = {
@@ -19,13 +18,15 @@ const EXPORT_FORMATS: Record<string, { mimeType: string; ext: string }> = {
   },
 };
 
-export function registerDriveReadTools(server: McpServer, auth: OAuth2Client) {
-  const drive = google.drive({ version: "v3", auth });
-
-  server.tool(
-    "read_file",
-    "Read the text content of a file from Google Drive. Works with Google Docs, Sheets (as CSV), plain text files, and other text formats. Binary files (images, PDFs) are not supported for content reading.",
-    {
+export function buildDriveReadTools(
+  _ctx: ToolsContext,
+  // biome-ignore lint/suspicious/noExplicitAny: heterogeneous Zod shapes per tool
+): Array<ToolDef<any, ToolsContext>> {
+  const read_file: ToolDef<z.ZodRawShape, ToolsContext> = {
+    name: "read_file",
+    description:
+      "Read the text content of a file from Google Drive. Works with Google Docs, Sheets (as CSV), plain text files, and other text formats. Binary files (images, PDFs) are not supported for content reading.",
+    shape: {
       file_id: z.string().describe("Google Drive file ID"),
       max_chars: z
         .number()
@@ -35,9 +36,13 @@ export function registerDriveReadTools(server: McpServer, auth: OAuth2Client) {
         .default(10000)
         .describe("Max characters to return (to avoid huge files)"),
     },
-    async ({ file_id, max_chars }) => {
+    handler: async (ctx, args) => {
+      const { file_id, max_chars } = args as {
+        file_id: string;
+        max_chars: number;
+      };
       // Get file metadata first
-      const meta = await drive.files.get({
+      const meta = await ctx.drive.files.get({
         fileId: file_id,
         fields: "id,name,mimeType,size",
       });
@@ -48,7 +53,7 @@ export function registerDriveReadTools(server: McpServer, auth: OAuth2Client) {
       // Google Workspace files need export
       const exportFormat = EXPORT_FORMATS[mimeType];
       if (exportFormat) {
-        const res = await drive.files.export(
+        const res = await ctx.drive.files.export(
           { fileId: file_id, mimeType: exportFormat.mimeType },
           { responseType: "text" },
         );
@@ -70,7 +75,7 @@ export function registerDriveReadTools(server: McpServer, auth: OAuth2Client) {
         mimeType === "application/json" ||
         mimeType === "application/xml"
       ) {
-        const res = await drive.files.get(
+        const res = await ctx.drive.files.get(
           { fileId: file_id, alt: "media" },
           { responseType: "text" },
         );
@@ -97,5 +102,7 @@ export function registerDriveReadTools(server: McpServer, auth: OAuth2Client) {
         isError: true,
       };
     },
-  );
+  };
+
+  return [read_file];
 }

@@ -1,54 +1,40 @@
+#!/usr/bin/env node
+/**
+ * stdio entry for gdrive-mcp.
+ * Used by Claude Desktop. For REST + MCP Streamable-HTTP, see ./http_server.ts.
+ */
+import { createLogger } from "@klapom/mcp-toolkit-ts";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { loadConfig } from "./config.js";
-import { createAuthenticatedClient } from "./auth.js";
-import { registerDriveListTools } from "./tools/drive-list.js";
-import { registerDriveSearchTools } from "./tools/drive-search.js";
-import { registerDriveReadTools } from "./tools/drive-read.js";
-import { registerDriveManageTools } from "./tools/drive-manage.js";
+import pkg from "../package.json" with { type: "json" };
+import { loadContext } from "./tools/context.js";
+import { registerTools } from "./tools/index.js";
 
-const VERSION = "0.1.0";
+const logger = createLogger(pkg.name);
 
-const server = new McpServer({
-  name: "gdrive-mcp",
-  version: VERSION,
-});
-
-async function main() {
-  let config;
-  try {
-    config = loadConfig();
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`[gdrive-mcp] Config error: ${msg}\n`);
-    process.exit(1);
-  }
-
-  const auth = await createAuthenticatedClient(config);
-
-  registerDriveListTools(server, auth);
-  registerDriveSearchTools(server, auth);
-  registerDriveReadTools(server, auth);
-  registerDriveManageTools(server, auth);
+async function main(): Promise<void> {
+  const ctx = await loadContext(logger);
+  const server = new McpServer({ name: pkg.name, version: pkg.version });
+  registerTools(server, ctx);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  logger.info({ version: pkg.version, surface: "stdio" }, "started");
 
-  process.stderr.write(`[gdrive-mcp] v${VERSION} started.\n`);
-
-  const shutdown = async (signal: string) => {
-    process.stderr.write(`[gdrive-mcp] Shutting down (${signal})...\n`);
+  const shutdown = async (signal: string): Promise<void> => {
+    logger.info({ signal }, "shutting down");
     await server.close();
     process.exit(0);
   };
-
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => {
+    void shutdown("SIGTERM");
+  });
+  process.on("SIGINT", () => {
+    void shutdown("SIGINT");
+  });
 }
 
-main().catch((error) => {
-  process.stderr.write(
-    `[gdrive-mcp] Fatal: ${error instanceof Error ? error.message : String(error)}\n`,
-  );
+main().catch((err: unknown) => {
+  logger.fatal({ err }, "fatal startup error");
   process.exit(1);
 });

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { loadCachedToken, saveToken, createOAuth2Client } from "./auth.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createOAuth2Client, loadCachedToken, saveToken } from "./auth.js";
 
 vi.mock("fs", () => ({
   readFileSync: vi.fn(),
@@ -18,7 +18,7 @@ vi.mock("googleapis", () => ({
   },
 }));
 
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 describe("auth", () => {
   beforeEach(() => {

@@ -1,0 +1,26 @@
+[Unit]
+Description=gdrive-mcp - REST 32370 + MCP Streamable-HTTP 33370
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/admin/projects/gdrive-mcp
+Environment=NODE_ENV=production
+Environment=LISTEN_PORT=32370
+Environment=MCP_PORT=33370
+Environment=LISTEN_HOST=0.0.0.0
+ExecStart=/usr/bin/node --env-file=.env /home/admin/projects/gdrive-mcp/dist/http_server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gdrive-mcp
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/admin/projects/gdrive-mcp /home/admin/.gdrive-mcp
+
+[Install]
+WantedBy=default.target

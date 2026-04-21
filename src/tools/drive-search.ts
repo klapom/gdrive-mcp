@@ -1,31 +1,28 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
+import type { ToolDef } from "@klapom/mcp-toolkit-ts";
 import { z } from "zod";
+import type { ToolsContext } from "./context.js";
 
-export function registerDriveSearchTools(server: McpServer, auth: OAuth2Client) {
-  const drive = google.drive({ version: "v3", auth });
-
-  server.tool(
-    "search_files",
-    "Search for files in Google Drive by name or content.",
-    {
+export function buildDriveSearchTools(
+  _ctx: ToolsContext,
+  // biome-ignore lint/suspicious/noExplicitAny: heterogeneous Zod shapes per tool
+): Array<ToolDef<any, ToolsContext>> {
+  const search_files: ToolDef<z.ZodRawShape, ToolsContext> = {
+    name: "search_files",
+    description: "Search for files in Google Drive by name or content.",
+    shape: {
       query: z.string().describe("Search text to look for"),
       search_in: z
         .enum(["name", "content", "both"])
         .default("name")
-        .describe(
-          "Search in file name, full text content (slower), or both",
-        ),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(50)
-        .default(10)
-        .describe("Max results"),
+        .describe("Search in file name, full text content (slower), or both"),
+      limit: z.number().int().min(1).max(50).default(10).describe("Max results"),
     },
-    async ({ query, search_in, limit }) => {
+    handler: async (ctx, args) => {
+      const { query, search_in, limit } = args as {
+        query: string;
+        search_in: "name" | "content" | "both";
+        limit: number;
+      };
       const escaped = query.replace(/'/g, "\\'");
       let q: string;
       switch (search_in) {
@@ -39,11 +36,10 @@ export function registerDriveSearchTools(server: McpServer, auth: OAuth2Client) 
           q = `(name contains '${escaped}' or fullText contains '${escaped}') and trashed=false`;
       }
 
-      const res = await drive.files.list({
+      const res = await ctx.drive.files.list({
         q,
         pageSize: limit,
-        fields:
-          "files(id,name,mimeType,size,modifiedTime,parents,webViewLink)",
+        fields: "files(id,name,mimeType,size,modifiedTime,parents,webViewLink)",
         orderBy: "modifiedTime desc",
       });
 
@@ -67,5 +63,7 @@ export function registerDriveSearchTools(server: McpServer, auth: OAuth2Client) 
         ],
       };
     },
-  );
+  };
+
+  return [search_files];
 }
