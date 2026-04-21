@@ -1,82 +1,80 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, expect, it } from "vitest";
+import { buildDriveSearchTools } from "./drive-search.js";
+import { buildTestContext } from "./test-helpers.js";
 
-const mockFilesList = vi.fn();
-
-vi.mock("googleapis", () => ({
-  google: {
-    drive: vi.fn(() => ({
-      files: { list: mockFilesList },
-    })),
-  },
-}));
-
-import { registerDriveSearchTools } from "./drive-search.js";
-
-function createMockServer() {
-  const tools = new Map<string, Function>();
-  return {
-    tool: (name: string, _desc: string, _schema: any, handler: Function) => {
-      tools.set(name, handler);
-    },
-    call: (name: string, args: any) => tools.get(name)!(args),
-  };
-}
+type Fn = ReturnType<typeof import("vitest").vi.fn>;
 
 describe("drive-search tools", () => {
-  let server: ReturnType<typeof createMockServer>;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    server = createMockServer();
-    registerDriveSearchTools(server as any, {} as any);
+  it("registers search_files", () => {
+    const ctx = buildTestContext();
+    const tools = buildDriveSearchTools(ctx);
+    expect(tools.map((t) => t.name)).toContain("search_files");
   });
 
   it("builds name query", async () => {
-    mockFilesList.mockResolvedValue({ data: { files: [] } });
-    await server.call("search_files", { query: "test", search_in: "name", limit: 10 });
-    expect(mockFilesList.mock.calls[0][0].q).toBe(
+    const ctx = buildTestContext();
+    (ctx.drive.files.list as Fn).mockResolvedValue({ data: { files: [] } });
+    const tool = buildDriveSearchTools(ctx).find((t) => t.name === "search_files")!;
+    await tool.handler(ctx, { query: "test", search_in: "name", limit: 10 });
+    expect((ctx.drive.files.list as Fn).mock.calls[0][0].q).toBe(
       "name contains 'test' and trashed=false",
     );
   });
 
   it("builds content query", async () => {
-    mockFilesList.mockResolvedValue({ data: { files: [] } });
-    await server.call("search_files", { query: "test", search_in: "content", limit: 10 });
-    expect(mockFilesList.mock.calls[0][0].q).toBe(
+    const ctx = buildTestContext();
+    (ctx.drive.files.list as Fn).mockResolvedValue({ data: { files: [] } });
+    const tool = buildDriveSearchTools(ctx).find((t) => t.name === "search_files")!;
+    await tool.handler(ctx, { query: "test", search_in: "content", limit: 10 });
+    expect((ctx.drive.files.list as Fn).mock.calls[0][0].q).toBe(
       "fullText contains 'test' and trashed=false",
     );
   });
 
   it("builds both query", async () => {
-    mockFilesList.mockResolvedValue({ data: { files: [] } });
-    await server.call("search_files", { query: "test", search_in: "both", limit: 10 });
-    const q = mockFilesList.mock.calls[0][0].q;
+    const ctx = buildTestContext();
+    (ctx.drive.files.list as Fn).mockResolvedValue({ data: { files: [] } });
+    const tool = buildDriveSearchTools(ctx).find((t) => t.name === "search_files")!;
+    await tool.handler(ctx, { query: "test", search_in: "both", limit: 10 });
+    const q = (ctx.drive.files.list as Fn).mock.calls[0][0].q;
     expect(q).toContain("name contains 'test'");
     expect(q).toContain("fullText contains 'test'");
   });
 
   it("escapes single quotes in query", async () => {
-    mockFilesList.mockResolvedValue({ data: { files: [] } });
-    await server.call("search_files", { query: "it's", search_in: "name", limit: 10 });
-    expect(mockFilesList.mock.calls[0][0].q).toContain("it\\'s");
+    const ctx = buildTestContext();
+    (ctx.drive.files.list as Fn).mockResolvedValue({ data: { files: [] } });
+    const tool = buildDriveSearchTools(ctx).find((t) => t.name === "search_files")!;
+    await tool.handler(ctx, { query: "it's", search_in: "name", limit: 10 });
+    expect((ctx.drive.files.list as Fn).mock.calls[0][0].q).toContain("it\\'s");
   });
 
   it("returns 'no files found' message when empty", async () => {
-    mockFilesList.mockResolvedValue({ data: { files: [] } });
-    const result = await server.call("search_files", { query: "nope", search_in: "name", limit: 10 });
-    expect(result.content[0].text).toContain('No files found for: "nope"');
+    const ctx = buildTestContext();
+    (ctx.drive.files.list as Fn).mockResolvedValue({ data: { files: [] } });
+    const tool = buildDriveSearchTools(ctx).find((t) => t.name === "search_files")!;
+    const result = await tool.handler(ctx, { query: "nope", search_in: "name", limit: 10 });
+    expect((result.content[0]! as { text: string }).text).toContain('No files found for: "nope"');
   });
 
   it("returns mapped file results", async () => {
-    mockFilesList.mockResolvedValue({
+    const ctx = buildTestContext();
+    (ctx.drive.files.list as Fn).mockResolvedValue({
       data: {
         files: [
-          { id: "1", name: "doc.txt", mimeType: "text/plain", modifiedTime: "2026-01-01", webViewLink: "https://x" },
+          {
+            id: "1",
+            name: "doc.txt",
+            mimeType: "text/plain",
+            modifiedTime: "2026-01-01",
+            webViewLink: "https://x",
+          },
         ],
       },
     });
-    const result = await server.call("search_files", { query: "doc", search_in: "name", limit: 10 });
-    const files = JSON.parse(result.content[0].text);
+    const tool = buildDriveSearchTools(ctx).find((t) => t.name === "search_files")!;
+    const result = await tool.handler(ctx, { query: "doc", search_in: "name", limit: 10 });
+    const files = JSON.parse((result.content[0]! as { text: string }).text);
     expect(files[0].id).toBe("1");
     expect(files[0].name).toBe("doc.txt");
   });

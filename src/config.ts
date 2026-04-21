@@ -1,5 +1,5 @@
-import { homedir } from "os";
-import { join } from "path";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 
 const ConfigSchema = z.object({
@@ -21,12 +21,9 @@ export function loadConfig(): Config {
 
   const result = ConfigSchema.safeParse(raw);
   if (!result.success) {
-    const errors = result.error.errors
-      .map((e) => `  ${e.path.join(".")}: ${e.message}`)
-      .join("\n");
+    const errors = result.error.errors.map((e) => `  ${e.path.join(".")}: ${e.message}`).join("\n");
     throw new Error(
-      `Missing Google credentials.\n${errors}\n` +
-        `Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env`,
+      `Missing Google credentials.\n${errors}\nSet GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env`,
     );
   }
   return result.data;

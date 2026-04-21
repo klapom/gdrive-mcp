@@ -1,9 +1,9 @@
+import { runAuthFlow } from "./auth.js";
 /**
  * CLI entry point for OAuth2 authentication.
  * Run: npm run auth
  */
 import { loadConfig } from "./config.js";
-import { runAuthFlow } from "./auth.js";
 
 try {
   const config = loadConfig();

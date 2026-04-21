@@ -1,20 +1,16 @@
-import { createServer } from "http";
-import { readFileSync, writeFileSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { dirname } from "node:path";
 import { google } from "googleapis";
-import type { OAuth2Client } from "google-auth-library";
 import type { Config } from "./config.js";
 
-const SCOPES = [
-  "https://www.googleapis.com/auth/drive",
-];
+// OAuth2Client is re-exported via the googleapis facade; alias for readability.
+export type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
+
+const SCOPES = ["https://www.googleapis.com/auth/drive"];
 
 export function createOAuth2Client(config: Config): OAuth2Client {
-  return new google.auth.OAuth2(
-    config.clientId,
-    config.clientSecret,
-    config.redirectUri,
-  );
+  return new google.auth.OAuth2(config.clientId, config.clientSecret, config.redirectUri);
 }
 
 /**
@@ -23,7 +19,7 @@ export function createOAuth2Client(config: Config): OAuth2Client {
 export function loadCachedToken(client: OAuth2Client, tokenPath: string): boolean {
   try {
     const raw = readFileSync(tokenPath, "utf-8");
-    client.setCredentials(JSON.parse(raw));
+    client.setCredentials(JSON.parse(raw) as Parameters<OAuth2Client["setCredentials"]>[0]);
     return true;
   } catch {
     return false;
@@ -51,11 +47,13 @@ export async function runAuthFlow(config: Config): Promise<void> {
     prompt: "consent",
   });
 
-  console.log("\n=== Google Drive MCP - Authentication ===\n");
-  console.log("Open this URL in your browser:\n");
-  console.log(authUrl);
-  console.log("\nWaiting for Google callback on port 3456...");
-  console.log("(Make sure port 3456 is forwarded in VSCode: Ports tab → Forward 3456)\n");
+  process.stdout.write("\n=== Google Drive MCP - Authentication ===\n\n");
+  process.stdout.write("Open this URL in your browser:\n\n");
+  process.stdout.write(`${authUrl}\n\n`);
+  process.stdout.write("Waiting for Google callback on port 3456...\n");
+  process.stdout.write(
+    "(Make sure port 3456 is forwarded in VSCode: Ports tab -> Forward 3456)\n\n",
+  );
 
   const code = await new Promise<string>((resolve, reject) => {
     const server = createServer((req, res) => {
@@ -78,22 +76,20 @@ export async function runAuthFlow(config: Config): Promise<void> {
       }
     });
 
-    server.listen(3456, () => {
-      console.log("Server läuft auf Port 3456 — warte auf Google-Redirect...");
-    });
+    server.listen(3456, () => {});
     server.on("error", reject);
-    setTimeout(() => {
-      server.close();
-      reject(new Error("Timeout nach 10 Minuten"));
-    }, 10 * 60 * 1000);
+    setTimeout(
+      () => {
+        server.close();
+        reject(new Error("Timeout nach 10 Minuten"));
+      },
+      10 * 60 * 1000,
+    );
   });
 
   const { tokens } = await client.getToken(code);
   client.setCredentials(tokens);
   saveToken(client, config.tokenPath);
-
-  console.log(`\nAuthentication successful!`);
-  console.log(`Token saved to: ${config.tokenPath}\n`);
 }
 
 /**
@@ -104,14 +100,12 @@ export async function createAuthenticatedClient(config: Config): Promise<OAuth2C
   const client = createOAuth2Client(config);
 
   if (!loadCachedToken(client, config.tokenPath)) {
-    process.stderr.write(
-      "\n[gdrive-mcp] Not authenticated. Run first:\n\n  npm run auth\n\n",
-    );
+    process.stderr.write("\n[gdrive-mcp] Not authenticated. Run first:\n\n  npm run auth\n\n");
     process.exit(1);
   }
 
   // Auto-refresh token if expired
-  client.on("tokens", (tokens) => {
+  client.on("tokens", (tokens: { access_token?: string | null; refresh_token?: string | null }) => {
     if (tokens.refresh_token || tokens.access_token) {
       const current = client.credentials;
       client.setCredentials({ ...current, ...tokens });

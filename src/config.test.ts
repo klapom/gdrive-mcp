@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
 describe("loadConfig", () => {
   const origEnv = { ...process.env };
 
   beforeEach(() => {
-    delete process.env.GOOGLE_CLIENT_ID;
-    delete process.env.GOOGLE_CLIENT_SECRET;
-    delete process.env.GOOGLE_TOKEN_PATH;
-    delete process.env.GOOGLE_REDIRECT_URI;
+    process.env.GOOGLE_CLIENT_ID = undefined;
+    process.env.GOOGLE_CLIENT_SECRET = undefined;
+    process.env.GOOGLE_TOKEN_PATH = undefined;
+    process.env.GOOGLE_REDIRECT_URI = undefined;
   });
 
   afterEach(() => {
